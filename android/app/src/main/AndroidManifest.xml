@@ -3,7 +3,7 @@
 
     <application
         android:usesCleartextTraffic="true"
-        android:label="학교 출입 및 결제 시스템"
+        android:label="경복대 출입증"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

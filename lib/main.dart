@@ -67,7 +67,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'POS Login Demo',
+      title: '경복대 출입증',
       theme: ThemeData(primarySwatch: Colors.blue),
       locale: Locale('ko'),
       supportedLocales: [Locale('ko')],
