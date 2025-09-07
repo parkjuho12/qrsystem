@@ -19,7 +19,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 version: 1.0.0+1
 
 environment:
-  sdk: ^3.7.2
+  sdk: ^3.7.0
 
 # Dependencies specify other packages that your package needs in order to work.
 # To automatically upgrade your package dependencies to the latest versions
@@ -45,13 +45,13 @@ dependencies:
   flip_card: ^0.7.0
   shared_preferences: ^2.5.3
   month_picker_dialog: ^6.0.3
-  intl: ^0.20.2
+  intl: ^0.19.0
   dropdown_button2: ^2.3.9
   glassmorphism: ^3.0.0
   flutter_screenutil: ^5.9.3
   flutter_launcher_icons: ^0.14.4
 
-flutter_icons:
+flutter_launcher_icons:
   android: true
   ios: true
   image_path: "images/kbu.jpeg"

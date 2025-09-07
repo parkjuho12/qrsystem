@@ -12,6 +12,7 @@ import 'dart:async';
 import 'package:qr_flutter/qr_flutter.dart';
 import './point_transaction_screen.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class PaymentScreen extends StatefulWidget {
   final String userId;
@@ -21,7 +22,7 @@ class PaymentScreen extends StatefulWidget {
   State<PaymentScreen> createState() => _PaymentScreenState();
 }
 
-class _PaymentScreenState extends State<PaymentScreen> {
+class _PaymentScreenState extends State<PaymentScreen> with WidgetsBindingObserver {
   int _userPoints = 0;
   String _qrImageUrl = '';
   bool _isLoading = false;
@@ -33,8 +34,71 @@ class _PaymentScreenState extends State<PaymentScreen> {
   @override
   void initState() {
     super.initState();
+    _loadSavedQrData();
     _refreshData();
     _fetchQrData();
+    
+    // 앱이 백그라운드로 갈 때와 포그라운드로 돌아올 때 감지
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    
+    if (state == AppLifecycleState.paused) {
+      // 앱이 백그라운드로 갈 때 타이머는 계속 동작하도록 함
+      print('앱이 백그라운드로 이동');
+    } else if (state == AppLifecycleState.resumed) {
+      // 앱이 포그라운드로 돌아올 때 저장된 시간을 확인하고 타이머 업데이트
+      _updateTimerFromSavedData();
+    }
+  }
+
+  Future<void> _updateTimerFromSavedData() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedQrGeneratedAt = prefs.getInt('qr_generated_at_${widget.userId}');
+    
+    if (savedQrGeneratedAt != null) {
+      final generatedAt = DateTime.fromMillisecondsSinceEpoch(savedQrGeneratedAt);
+      final now = DateTime.now();
+      final elapsedSeconds = now.difference(generatedAt).inSeconds;
+      
+      if (elapsedSeconds < 60) {
+        setState(() {
+          _qrRemainingSeconds = 60 - elapsedSeconds;
+          _showExpiredMessage = false;
+        });
+      } else {
+        setState(() {
+          _qrRemainingSeconds = 0;
+          _showExpiredMessage = true;
+        });
+        _qrTimer?.cancel();
+      }
+    }
+  }
+
+  Future<void> _loadSavedQrData() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedQrGeneratedAt = prefs.getInt('qr_generated_at_${widget.userId}');
+    final savedQrImageUrl = prefs.getString('qr_image_url_${widget.userId}');
+    
+    if (savedQrGeneratedAt != null && savedQrImageUrl != null) {
+      final generatedAt = DateTime.fromMillisecondsSinceEpoch(savedQrGeneratedAt);
+      final now = DateTime.now();
+      final elapsedSeconds = now.difference(generatedAt).inSeconds;
+      
+      if (elapsedSeconds < 60) {
+        setState(() {
+          _qrImageUrl = savedQrImageUrl;
+          _qrGeneratedAt = generatedAt;
+          _qrRemainingSeconds = 60 - elapsedSeconds;
+          _showExpiredMessage = false;
+        });
+        _startQrTimer();
+      }
+    }
   }
 
   Future<void> _fetchQrData() async {
@@ -46,25 +110,22 @@ class _PaymentScreenState extends State<PaymentScreen> {
           response.body.isNotEmpty &&
           !response.body.startsWith("fail")) {
         final qrData = response.body.trim();
+        final qrImageUrl = '$qrData#${DateTime.now().millisecondsSinceEpoch}';
+        final generatedAt = DateTime.now();
+        
+        // QR 데이터를 SharedPreferences에 저장
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setInt('qr_generated_at_${widget.userId}', generatedAt.millisecondsSinceEpoch);
+        await prefs.setString('qr_image_url_${widget.userId}', qrImageUrl);
+        
         setState(() {
-          _qrImageUrl = '$qrData#${DateTime.now().millisecondsSinceEpoch}';
-          _qrGeneratedAt = DateTime.now();
+          _qrImageUrl = qrImageUrl;
+          _qrGeneratedAt = generatedAt;
           _qrRemainingSeconds = 60;
           _showExpiredMessage = false;
         });
         _qrTimer?.cancel();
-        _qrTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-          if (_qrRemainingSeconds <= 0) {
-            timer.cancel();
-            setState(() {
-              _showExpiredMessage = true;
-            });
-          } else {
-            setState(() {
-              _qrRemainingSeconds--;
-            });
-          }
-        });
+        _startQrTimer();
       } else {
         print('QR 데이터 생성 실패 : ${response.body}');
       }
@@ -95,9 +156,25 @@ class _PaymentScreenState extends State<PaymentScreen> {
     }
   }
 
+  void _startQrTimer() {
+    _qrTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_qrRemainingSeconds <= 0) {
+        timer.cancel();
+        setState(() {
+          _showExpiredMessage = true;
+        });
+      } else {
+        setState(() {
+          _qrRemainingSeconds--;
+        });
+      }
+    });
+  }
+
   @override
   void dispose() {
     _qrTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
