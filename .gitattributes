@@ -1,0 +1,20 @@
+# GitHub language detection
+*.dart linguist-detectable=true
+*.kt linguist-detectable=false
+*.swift linguist-detectable=false
+*.cpp linguist-detectable=false
+*.cc linguist-detectable=false
+*.h linguist-detectable=false
+*.java linguist-detectable=false
+
+# Mark platform-specific directories as generated
+android/* linguist-generated=true
+ios/* linguist-generated=true
+linux/* linguist-generated=true
+macos/* linguist-generated=true
+windows/* linguist-generated=true
+web/* linguist-generated=true
+
+# Mark build and cache directories as generated
+build/* linguist-generated=true
+.dart_tool/* linguist-generated=true
