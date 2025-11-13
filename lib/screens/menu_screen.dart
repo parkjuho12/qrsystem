@@ -40,7 +40,7 @@ class _WeeklyMenuScreenState extends State<WeeklyMenuScreen> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) {  
     return Scaffold(
       body: Column(
         children: [Expanded(child: WebViewWidget(controller: _controller))],

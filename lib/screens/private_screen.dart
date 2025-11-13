@@ -1,15 +1,9 @@
-// 이 파일은 사용자의 포인트 거래 및 식권 사용 내역을 보여주는 페이지입니다.
-// 서버로부터 포인트 충전/환불 내역과 식권 결제 내역을 모두 가져와 시간 순서대로 정렬하여 표시합니다.
-// 사용자는 현재 보유 포인트를 확인할 수 있으며, '충전하기'와 '환불하기' 버튼을 통해 각 기능 페이지로 이동할 수 있습니다.
-// 또한, 거래 유형별(전체, 충전, 환불, 식권) 및 월별로 내역을 필터링하여 조회하는 기능을 제공합니다.
-
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import '../services/api_constants.dart';
-import './charge_screen.dart';
-import './refund_screen.dart';
+import '../services/auth_service.dart';
 
 class PointTransactionScreen extends StatefulWidget {
   final String userId;
@@ -21,110 +15,122 @@ class PointTransactionScreen extends StatefulWidget {
 
 class _PointTransactionScreenState extends State<PointTransactionScreen> {
   List<dynamic> _transactions = [];
-  int _userPoints = 0;
+  bool _isLoading = true;
   String _selectedFilter = '전체';
   String _selectedMonthFilter = '전체';
 
   @override
   void initState() {
     super.initState();
-    _fetchUserData(widget.userId);
-    _fetchTransactions(widget.userId);
+    _fetchTransactions();
   }
 
-  Future<void> _fetchUserData(String userId) async {
-    try {
-      final response = await http.get(
-        Uri.parse('${ApiConstants.userpoint}?userId=$userId'),
-      );
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        if (data['success'] == true) {
-          setState(() {
-            _userPoints = data['points'];
-          });
-        }
+  // 개인 결제 내역 조회 API 호출
+  Future<void> _fetchTransactions() async {
+    setState(() => _isLoading = true);
+    
+    final token = await AuthService.getToken();
+    
+    if (token == null) {
+      setState(() => _isLoading = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('로그인이 필요합니다.'),
+            backgroundColor: Colors.red,
+          ),
+        );
       }
-    } catch (e) {
-      print('사용자 데이터 로딩 예외 발생: $e');
+      return;
     }
-  }
 
-  Future<List<Map<String, dynamic>>> _fetchTicketTransactions(
-    String userId,
-  ) async {
     try {
       final response = await http.get(
-        Uri.parse('${ApiConstants.userTicketUsageLog}?userId=$userId'),
+        Uri.parse(ApiConstants.myPayments),
+        headers: {
+          'Authorization': 'Bearer $token',
+        },
       );
+
+      // 토큰 만료 처리
+      if (response.statusCode == 401 || response.statusCode == 403) {
+        await AuthService.logout();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('세션이 만료되었습니다. 다시 로그인해주세요.'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+          Navigator.pushReplacementNamed(context, '/login');
+        }
+        return;
+      }
+
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        if (data is List) {
-          return data.map<Map<String, dynamic>>((tx) {
-            String description;
-            int cost = (tx['amount'] as num).abs().toInt();
-
-            if (tx['menu_name'] != null &&
-                (tx['menu_name'] as String).isNotEmpty) {
-              description = tx['menu_name'];
-            } else {
-              if (cost == 4800) {
-                description = '아질리아';
-              } else if (cost == 5000) {
-                description = '피오니';
-              } else {
-                description = '식권';
+        
+        if (data['status'] == 'success') {
+          final paymentList = data['data'] as List;
+          
+          final transactions = paymentList.map((payment) {
+            // amount 처리
+            int amount = 0;
+            try {
+              if (payment['amount'] is String) {
+                amount = double.parse(payment['amount']).toInt();
+              } else if (payment['amount'] is num) {
+                amount = (payment['amount'] as num).toInt();
               }
+            } catch (e) {
+              amount = 0;
             }
-
+            
+            // 날짜 필드 확인
+            final paymentTime = payment['payment_time'] ?? 
+                                payment['paymentTime'] ?? 
+                                payment['created_at'] ?? 
+                                payment['createdAt'] ?? 
+                                payment['timestamp'] ?? 
+                                '';
+            
             return {
-              'description': description,
-              'amount': cost,
-              'created_at': tx['payment_time'],
-              'transaction_type': 'ticket_payment',
+              'id': payment['id'],
+              'employee_number': payment['employee_number'],
+              'description': payment['menu_name'] ?? '식권',
+              'amount': amount,
+              'restaurant': payment['restaurant'] ?? '',
+              'created_at': paymentTime,
+              'transaction_type': 'payment',
+              'status': payment['status'],
+              'cancelled_at': payment['cancelled_at'],
+              'refunded_at': payment['refunded_at'],
             };
           }).toList();
+          
+          setState(() {
+            _transactions = transactions;
+            _isLoading = false;
+          });
         } else {
-          print('식권 내역 API 응답이 리스트가 아닙니다: $data');
-          return [];
+          setState(() => _isLoading = false);
         }
       } else {
-        print('식권 내역 API 오류: ${response.statusCode}');
-        return [];
+        setState(() => _isLoading = false);
       }
     } catch (e) {
-      print('식권 내역 API 예외 발생: $e');
-      return [];
+      setState(() => _isLoading = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('결제 내역을 불러올 수 없습니다'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
-  Future<void> _fetchTransactions(String userId) async {
-    List<dynamic> pointTxs = [];
-    try {
-      final response = await http.get(
-        Uri.parse('${ApiConstants.getPointTransactions}?userId=$userId'),
-      );
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        if (data['success'] == true && data['transactions'] is List) {
-          pointTxs = data['transactions'];
-        }
-      }
-    } catch (e) {
-      print('포인트 거래내역 로딩 예외 발생: $e');
-    }
-
-    final ticketTxs = await _fetchTicketTransactions(userId);
-
-    setState(() {
-      _transactions = [...pointTxs, ...ticketTxs];
-      _transactions.sort((a, b) {
-        final aDate = a['created_at'] ?? '';
-        final bDate = b['created_at'] ?? '';
-        return bDate.compareTo(aDate);
-      });
-    });
-  }
 
   void _showFilterSheet() {
     showModalBottomSheet(
@@ -148,7 +154,7 @@ class _PointTransactionScreenState extends State<PointTransactionScreen> {
                 ),
               ),
               const SizedBox(height: 16),
-              ...['전체', '충전', '환불', '식권'].map((filter) {
+              ...['전체', '완료', '취소', '환불'].map((filter) {
                 final isSelected = _selectedFilter == filter;
                 return Material(
                   color: isSelected ? Colors.blue[100] : Colors.transparent,
@@ -354,12 +360,12 @@ class _PointTransactionScreenState extends State<PointTransactionScreen> {
 
   List<dynamic> _getFilteredTransactions() {
     return _transactions.where((tx) {
-      final transactionType = tx['transaction_type'];
+      final status = tx['status'] ?? 'completed';
       final matchesType =
           _selectedFilter == '전체' ||
-          (_selectedFilter == '충전' && transactionType == 'charge') ||
-          (_selectedFilter == '환불' && transactionType == 'refund') ||
-          (_selectedFilter == '식권' && transactionType == 'ticket_payment');
+          (_selectedFilter == '완료' && status == 'completed') ||
+          (_selectedFilter == '취소' && status == 'cancelled') ||
+          (_selectedFilter == '환불' && status == 'refunded');
 
       if (!matchesType) return false;
       if (_selectedMonthFilter == '전체') return true;
@@ -368,7 +374,7 @@ class _PointTransactionScreenState extends State<PointTransactionScreen> {
       if (txDateStr.isEmpty) return false;
 
       try {
-        final txDate = DateTime.parse(txDateStr);
+        final txDate = DateTime.parse(txDateStr.replaceAll(' ', 'T'));
         final monthLabel = DateFormat('yyyy년 M월').format(txDate);
         return monthLabel == _selectedMonthFilter;
       } catch (_) {
@@ -384,93 +390,122 @@ class _PointTransactionScreenState extends State<PointTransactionScreen> {
     for (var tx in transactions) {
       final dateStr = tx['created_at'] ?? '';
       if (dateStr.isEmpty) continue;
+      
       try {
-        final date = DateTime.parse(dateStr);
+        // "2025-11-13 10:30:15" 형식을 DateTime으로 파싱
+        DateTime date;
+        if (dateStr.contains('T')) {
+          date = DateTime.parse(dateStr);
+        } else if (dateStr.contains(' ')) {
+          date = DateTime.parse(dateStr.replaceAll(' ', 'T'));
+        } else {
+          date = DateTime.parse(dateStr);
+        }
+        
         final dateLabel = DateFormat('yyyy-MM-dd').format(date);
         grouped.putIfAbsent(dateLabel, () => []).add(tx);
-      } catch (_) {}
+      } catch (e) {
+        // 날짜 파싱 실패 시 무시
+      }
     }
     return grouped;
   }
 
   Widget _buildTransactionItem(Map<String, dynamic> tx) {
-    final transactionType = tx['transaction_type'];
+    final status = tx['status'] ?? 'completed';
     final amount = (tx['amount'] as num?)?.toInt() ?? 0;
     final dateTimeStr = tx['created_at'] ?? '';
+    final restaurant = tx['restaurant'] ?? '';
+    final menuName = tx['description'] ?? '식권';
 
-    String transactionLabel;
-    IconData iconData;
-    bool isDebit;
+    // 식권 개수 계산 (아질리아: 4800원, 피오니: 5000원)
+    int ticketCount = 0;
+    if (restaurant == '아질리아' && amount > 0) {
+      ticketCount = (amount / 4800).round();
+    } else if (restaurant == '피오니' && amount > 0) {
+      ticketCount = (amount / 5000).round();
+    }
+    
+    String transactionLabel = menuName;
+    if (ticketCount > 0) {
+      transactionLabel = '$restaurant 식권 ${ticketCount}장';
+    } else if (restaurant.isNotEmpty) {
+      transactionLabel = '$restaurant';
+    }
+    
+    // 아이콘과 색상 설정
+    IconData iconData = Icons.confirmation_number; // 식권 아이콘
     Color iconColor;
     Color amountTextColor;
+    String statusText;
 
-    if (transactionType == 'charge') {
-      transactionLabel = tx['description'] ?? '포인트 충전';
-      iconColor = Colors.blueAccent;
-      amountTextColor = Colors.blueAccent;
-      iconData = Icons.add_circle_outline;
-      isDebit = false;
-    } else if (transactionType == 'refund') {
-      transactionLabel = tx['description'] ?? '포인트 환불';
-      iconColor = Colors.redAccent;
+    // 결제 상태에 따른 색상과 텍스트
+    if (status == 'completed') {
+      if (restaurant == '아질리아') {
+        iconColor = const Color(0xFF4CAF50); // 초록
+        statusText = '아질리아';
+      } else if (restaurant == '피오니') {
+        iconColor = const Color(0xFF2196F3); // 파랑
+        statusText = '피오니';
+      } else {
+        iconColor = Colors.green;
+        statusText = restaurant.isNotEmpty ? restaurant : '완료';
+      }
       amountTextColor = Colors.redAccent;
-      iconData = Icons.remove_circle_outline;
-      isDebit = true;
-    } else if (transactionType == 'ticket_payment') {
-      transactionLabel = '식권 결제';
-      iconColor = Colors.redAccent;
-      amountTextColor = Colors.redAccent;
-      iconData = Icons.confirmation_number_outlined;
-      isDebit = true;
+    } else if (status == 'cancelled') {
+      iconColor = Colors.orange;
+      amountTextColor = Colors.orange;
+      statusText = '취소됨';
+    } else if (status == 'refunded') {
+      iconColor = Colors.blue;
+      amountTextColor = Colors.blue;
+      statusText = '환불완료';
     } else {
-      transactionLabel = tx['description'] ?? '기타 거래';
       iconColor = Colors.grey;
       amountTextColor = Colors.grey;
-      iconData = Icons.help_outline;
-      isDebit = true;
+      statusText = '알 수 없음';
     }
 
-    String formattedTime = '';
+    String formattedDateTime = '';
     if (dateTimeStr.isNotEmpty) {
       try {
-        final parsedDate = DateTime.parse(dateTimeStr);
-        formattedTime = DateFormat('HH:mm').format(parsedDate);
+        final parsedDate = DateTime.parse(dateTimeStr.replaceAll(' ', 'T'));
+        // 25.10.26 10:30 형식으로 표시
+        formattedDateTime = DateFormat('yy.MM.dd HH:mm').format(parsedDate);
       } catch (_) {}
     }
 
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4.0),
+      padding: const EdgeInsets.symmetric(vertical: 8.0),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Transform.translate(
-            offset: const Offset(0, 8),
-            child: Icon(iconData, color: iconColor, size: 34),
+            offset: const Offset(0, 4),
+            child: Icon(iconData, color: iconColor, size: 36),
           ),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // 첫째 줄: 식당명과 금액
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Flexible(
-                      child: Text(
-                        transactionLabel,
-                        style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                        ),
-                        overflow: TextOverflow.ellipsis,
+                    Text(
+                      statusText, // 아질리아 또는 피오니
+                      style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.bold,
+                        color: iconColor,
                       ),
                     ),
                     Text.rich(
                       TextSpan(
                         children: [
                           TextSpan(
-                            text:
-                                '${isDebit ? '-' : '+'}${NumberFormat('#,###').format(amount)}',
+                            text: '-${NumberFormat('#,###').format(amount)}',
                             style: TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.bold,
@@ -480,7 +515,7 @@ class _PointTransactionScreenState extends State<PointTransactionScreen> {
                           const TextSpan(
                             text: '원',
                             style: TextStyle(
-                              fontSize: 17,
+                              fontSize: 16,
                               fontWeight: FontWeight.bold,
                               color: Colors.black,
                             ),
@@ -491,15 +526,29 @@ class _PointTransactionScreenState extends State<PointTransactionScreen> {
                   ],
                 ),
                 const SizedBox(height: 4),
-                if (formattedTime.isNotEmpty)
+                // 둘째 줄: 식권 개수
+                if (ticketCount > 0)
                   Text(
-                    formattedTime,
-                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    '식권 ${ticketCount}장',
+                    style: const TextStyle(
+                      fontSize: 14,
+                      color: Colors.black87,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                const SizedBox(height: 4),
+                // 셋째 줄: 날짜 시간
+                if (formattedDateTime.isNotEmpty)
+                  Text(
+                    formattedDateTime,
+                    style: const TextStyle(
+                      fontSize: 12, 
+                      color: Colors.grey,
+                    ),
                   ),
               ],
             ),
           ),
-          const SizedBox(height: 56),
         ],
       ),
     );
@@ -507,101 +556,63 @@ class _PointTransactionScreenState extends State<PointTransactionScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final userId = widget.userId;
+    if (_isLoading) {
+      return Scaffold(
+        backgroundColor: Colors.white,
+        appBar: AppBar(
+          title: const Padding(
+            padding: EdgeInsets.only(top: 8.0),
+            child: Text('결제 내역'),
+          ),
+          backgroundColor: Colors.white,
+          foregroundColor: Colors.black,
+          elevation: 0,
+          scrolledUnderElevation: 0,
+        ),
+        body: const Center(
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+    
     final filteredTransactions = _getFilteredTransactions();
     final groupedTransactions = _groupTransactionsByDate(filteredTransactions);
     final sortedDates =
         groupedTransactions.keys.toList()..sort((a, b) => b.compareTo(a));
-    final formatter = NumberFormat('#,###');
 
     return Scaffold(
       backgroundColor: Colors.white,
       appBar: AppBar(
         title: const Padding(
           padding: EdgeInsets.only(top: 8.0),
-          child: Text('거래 내역'),
+          child: Text('결제 내역'),
         ),
         backgroundColor: Colors.white,
         foregroundColor: Colors.black,
         elevation: 0,
         scrolledUnderElevation: 0,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _fetchTransactions,
+            tooltip: '새로고침',
+          ),
+        ],
       ),
 
       body: Column(
         children: [
           const SizedBox(height: 16),
           const Text(
-            'My Point',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+            '결제 내역',
+            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 8),
           Text(
-            '${formatter.format(_userPoints)}P',
-            style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold),
+            '총 ${_transactions.length}건',
+            style: const TextStyle(fontSize: 16, color: Colors.grey),
           ),
           const SizedBox(height: 24),
-          Row(
-            children: [
-              const SizedBox(width: 16),
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: () async {
-                    final result = await Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => ChargeScreen(userId: userId),
-                      ),
-                    );
-                    if (result == true) {
-                      _fetchUserData(userId);
-                      _fetchTransactions(userId);
-                    }
-                  },
-                  icon: const Icon(Icons.add_circle_outline),
-                  label: const Text('충전하기'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blue[100],
-                    foregroundColor: Colors.black,
-                    elevation: 0,
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: () async {
-                    final result = await Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => RefundScreen(userId: userId),
-                      ),
-                    );
-                    if (result == true) {
-                      _fetchUserData(userId);
-                      _fetchTransactions(userId);
-                    }
-                  },
-                  icon: const Icon(Icons.remove_circle_outline),
-                  label: const Text('환불하기'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.grey[100],
-                    foregroundColor: Colors.black,
-                    elevation: 0,
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 16),
-            ],
-          ),
-          const SizedBox(height: 16),
           Container(
             color: const Color(0xFFF4F6F8),
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
@@ -643,7 +654,6 @@ class _PointTransactionScreenState extends State<PointTransactionScreen> {
                     ),
                   ],
                 ),
-
                 Row(
                   children: [
                     const Padding(
@@ -682,7 +692,6 @@ class _PointTransactionScreenState extends State<PointTransactionScreen> {
               ],
             ),
           ),
-
           Expanded(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
