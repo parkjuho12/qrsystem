@@ -1,7 +1,7 @@
 class ApiConstants {
   // 개발 환경에서는 실제 네트워크 IP 사용
   // localhost나 127.0.0.1 대신 실제 IP 주소 사용
-  static const String baseUrl = "https://qr.pjhpjh.kr/seahawk1  ";
+  static const String baseUrl = "https://qr.pjhpjh.kr/seahawk1";
   
 
   // 인증 관련
