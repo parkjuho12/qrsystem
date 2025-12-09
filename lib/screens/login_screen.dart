@@ -32,38 +32,50 @@ class _LoginScreenState extends State<LoginScreen> {
       message = '';
     });
 
-    final employeeNumber = idController.text.trim();
-    final password = pwController.text;
+    final id = idController.text.trim();
+    final pw = pwController.text;
 
-    final result = await AuthService.login(employeeNumber, password);
+    final result = await AuthService.login(id, pw);
+
+    final prefs = await SharedPreferences.getInstance();
 
     if (result['status'] == "success") {
-      // AuthService에서 이미 토큰과 사용자 정보가 저장됨
-      // 'data' 또는 'user' 중 존재하는 것을 사용
-      final user = result['data'] ?? result['user'];
-      
-      if (user == null) {
-        setState(() {
-          message = '로그인 정보를 가져올 수 없습니다.';
-        });
-        return;
-      }
-      
+      await prefs.setString('jwt_token', result['token']);
+      await prefs.setString('user_id', result['id']);
+      await prefs.setString('user_name', result['name']);
+      await prefs.setString('affiliation', result['affiliation']);
+      await prefs.setString('profile_image', result['profile_image']);
+      await prefs.setString('user_type', 'user');
+
       if (!mounted) return;
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(
-          builder: (_) => QRScreen(
-            userId: user['employee_number']?.toString() ?? user['user_id']?.toString() ?? '',
-            userName: user['name']?.toString() ?? '',
-            affiliation: user['affiliation']?.toString() ?? '',
-            profileImage: user['profile_image']?.toString() ?? '1.jpeg',
-          ),
+          builder:
+              (_) => QRScreen(
+                userId: result['id'],
+                userName: result['name'],
+                affiliation: result['affiliation'],
+                profileImage: result['profile_image'],
+              ),
         ),
       );
+    } else if (result['status'] == "admin_success") {
+      await prefs.setString('jwt_token', result['token']);
+      await prefs.setString('user_id', result['id']);
+      await prefs.setString('user_name', result['name']);
+      await prefs.setString('user_type', 'admin');
+      // 관리자 전용 화면이 있다면 여기에 이동 처리
     } else {
+      await prefs.remove('jwt_token');
+      await prefs.remove('user_id');
+      await prefs.remove('user_name');
+      await prefs.remove('user_type');
+      await prefs.remove('profile_image');
+      await prefs.remove('affiliation');
+
       setState(() {
-        message = result['message'] ?? "사번,학번 또는 비밀번호가 잘못 되었습니다.\n아이디와 비밀번호를 다시 한 번 확인해주세요.";
+        message = "사번,학번 또는 비밀번호가 잘못 되었습니다.\n아이디와 비밀번호를 다시 한 번 확인해주세요.";
       });
     }
 
