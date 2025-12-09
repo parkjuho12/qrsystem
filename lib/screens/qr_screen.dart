@@ -159,7 +159,6 @@ class _QRScreenState extends State<QRScreen> with SingleTickerProviderStateMixin
             Positioned.fill(
               child: TabBarView(
                 controller: _tabController,
-                physics: const NeverScrollableScrollPhysics(),
                 children: [
                   SingleChildScrollView(
                     padding: EdgeInsets.only(top: 100.h, bottom: 80.h),
