@@ -1,16 +1,15 @@
-// 이 파일은 사용자의 QR 코드 결제를 처리하는 메인 화면입니다.
-// 서버로부터 사용자별 고유 QR 데이터를 받아와 60초의 유효기간을 가진 QR코드를 화면에 표시합니다.
-// 사용자의 현재 보유 포인트를 함께 보여주며, QR 코드 유효시간이 만료되면 재발급을 유도합니다.
-// UI는 티켓 형태의 디자인으로 구성되어 있으며, 포인트 거래 내역 화면으로 이동하는 기능을 포함합니다.
-
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import '../services/api_constants.dart';
+import '../services/auth_service.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'dart:convert';
 import 'dart:async';
 import 'package:qr_flutter/qr_flutter.dart';
-import './point_transaction_screen.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'private_screen.dart';
+
+// 디자인 적용을 위한 페인터 클래스들이 파일 하단에 포함되어 있습니다.
 
 class PaymentScreen extends StatefulWidget {
   final String userId;
@@ -20,11 +19,10 @@ class PaymentScreen extends StatefulWidget {
   State<PaymentScreen> createState() => _PaymentScreenState();
 }
 
-class _PaymentScreenState extends State<PaymentScreen> {
-  int _userPoints = 0;
+class _PaymentScreenState extends State<PaymentScreen>
+    with WidgetsBindingObserver {
   String _qrImageUrl = '';
   bool _isLoading = false;
-  DateTime? _qrGeneratedAt;
   int _qrRemainingSeconds = 0;
   Timer? _qrTimer;
   bool _showExpiredMessage = false;
@@ -32,78 +30,278 @@ class _PaymentScreenState extends State<PaymentScreen> {
   @override
   void initState() {
     super.initState();
-    _refreshData();
-    _fetchQrData();
+    _initializeScreen();
+
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  Future<void> _initializeScreen() async {
+    await _loadSavedQrData();
+    if (_qrImageUrl.isEmpty) {
+      await _fetchQrData();
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      _updateTimerFromSavedData();
+    }
+  }
+
+  Future<void> _updateTimerFromSavedData() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedQrGeneratedAt = prefs.getInt('qr_generated_at_${widget.userId}');
+    final savedQrImageUrl = prefs.getString('qr_image_url_${widget.userId}');
+
+    if (savedQrGeneratedAt != null && savedQrImageUrl != null) {
+      final generatedAt = DateTime.fromMillisecondsSinceEpoch(
+        savedQrGeneratedAt,
+      );
+      final now = DateTime.now();
+      final elapsedSeconds = now.difference(generatedAt).inSeconds;
+
+      if (elapsedSeconds < 300) {
+        setState(() {
+          _qrImageUrl = savedQrImageUrl;
+          _qrRemainingSeconds = (300 - elapsedSeconds).toInt();
+          _showExpiredMessage = false;
+        });
+        _qrTimer?.cancel();
+        _startQrTimer();
+      } else {
+        setState(() {
+          _qrImageUrl = '';
+          _qrRemainingSeconds = 0;
+          _showExpiredMessage = true;
+        });
+        _qrTimer?.cancel();
+        await prefs.remove('qr_generated_at_${widget.userId}');
+        await prefs.remove('qr_image_url_${widget.userId}');
+      }
+    }
+  }
+
+  Future<void> _loadSavedQrData() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedQrGeneratedAt = prefs.getInt('qr_generated_at_${widget.userId}');
+    final savedQrImageUrl = prefs.getString('qr_image_url_${widget.userId}');
+
+    if (savedQrGeneratedAt != null && savedQrImageUrl != null) {
+      final generatedAt = DateTime.fromMillisecondsSinceEpoch(
+        savedQrGeneratedAt,
+      );
+      final now = DateTime.now();
+      final elapsedSeconds = now.difference(generatedAt).inSeconds;
+
+      if (elapsedSeconds < 300) {
+        setState(() {
+          _qrImageUrl = savedQrImageUrl;
+          _qrRemainingSeconds = (300 - elapsedSeconds).toInt();
+          _showExpiredMessage = false;
+        });
+        _startQrTimer();
+      } else {
+        await prefs.remove('qr_generated_at_${widget.userId}');
+        await prefs.remove('qr_image_url_${widget.userId}');
+        setState(() {
+          _qrImageUrl = '';
+          _qrRemainingSeconds = 0;
+          _showExpiredMessage = false;
+        });
+      }
+    }
   }
 
   Future<void> _fetchQrData() async {
     try {
-      final response = await http.get(
-        Uri.parse('${ApiConstants.generatePaymentQr}?id=${widget.userId}'),
+      final response = await http.post(
+        Uri.parse(ApiConstants.qrIssue),
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer ${AuthService.token}",
+        },
+        body: jsonEncode({'ticket_count': 1}),
       );
-      if (response.statusCode == 200 &&
-          response.body.isNotEmpty &&
-          !response.body.startsWith("fail")) {
-        final qrData = response.body.trim();
-        setState(() {
-          _qrImageUrl = '$qrData#${DateTime.now().millisecondsSinceEpoch}';
-          _qrGeneratedAt = DateTime.now();
-          _qrRemainingSeconds = 60;
-          _showExpiredMessage = false;
-        });
-        _qrTimer?.cancel();
-        _qrTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-          if (_qrRemainingSeconds <= 0) {
-            timer.cancel();
+
+      if (response.statusCode == 200) {
+        final responseData = jsonDecode(response.body.trim());
+
+        if (responseData['status'] == 'success') {
+          final qrData = responseData['qr_data'];
+          final generatedAt = DateTime.now();
+          int remainingSeconds =
+              (responseData['remaining_seconds'] ?? 300).toInt();
+
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setInt(
+            'qr_generated_at_${widget.userId}',
+            generatedAt.millisecondsSinceEpoch,
+          );
+          await prefs.setString('qr_image_url_${widget.userId}', qrData);
+          await prefs.setString('qr_user_id_${widget.userId}', widget.userId);
+
+          setState(() {
+            _qrImageUrl = qrData;
+            _qrRemainingSeconds = remainingSeconds;
+            _showExpiredMessage = false;
+          });
+
+          _qrTimer?.cancel();
+          _startQrTimer();
+        } else {
+          if (responseData['existing_qr'] != null) {
+            final existingQr = responseData['existing_qr'];
+            final remainingSeconds =
+                (existingQr['remaining_seconds'] ?? 0).toInt();
+
             setState(() {
-              _showExpiredMessage = true;
+              _qrImageUrl = '';
+              _qrRemainingSeconds = remainingSeconds;
+              _showExpiredMessage = remainingSeconds <= 0;
             });
+
+            if (remainingSeconds > 0) {
+              _startQrTimer();
+            }
+
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  '이미 유효한 QR이 있습니다. ${_formatTime(remainingSeconds)} 후 재발급 가능합니다.',
+                ),
+                backgroundColor: Colors.orange,
+              ),
+            );
           } else {
             setState(() {
-              _qrRemainingSeconds--;
+              _qrImageUrl = '';
+              _qrRemainingSeconds = 0;
+              _showExpiredMessage = true;
             });
+
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(responseData['message'] ?? 'QR 발급에 실패했습니다'),
+                backgroundColor: Colors.red,
+              ),
+            );
           }
-        });
+        }
       } else {
-        print('QR 데이터 생성 실패 : ${response.body}');
+        setState(() {
+          _qrImageUrl = '';
+          _qrRemainingSeconds = 0;
+          _showExpiredMessage = true;
+        });
       }
     } catch (e) {
-      print('QR 요청 오류: $e');
+      setState(() {
+        _qrImageUrl = '';
+        _qrRemainingSeconds = 0;
+        _showExpiredMessage = true;
+      });
     }
   }
 
-  Future<void> _refreshData() async {
-    await _fetchUserData();
+  void _startQrTimer() {
+    _qrTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_qrRemainingSeconds <= 0) {
+        timer.cancel();
+        setState(() {
+          _showExpiredMessage = true;
+        });
+      } else {
+        setState(() {
+          _qrRemainingSeconds--;
+        });
+      }
+    });
   }
 
-  Future<void> _fetchUserData() async {
-    try {
-      final response = await http.get(
-        Uri.parse('${ApiConstants.userpoint}?userId=${widget.userId}'),
+  String _formatTime(int seconds) {
+    final minutes = seconds ~/ 60;
+    final remainingSeconds = seconds % 60;
+    return '${minutes.toString().padLeft(2, '0')}:${remainingSeconds.toString().padLeft(2, '0')}';
+  }
+
+  void _handleRefreshTap() {
+    if (_qrRemainingSeconds > 0) {
+      showDialog(
+        context: context,
+        builder: (BuildContext context) {
+          return AlertDialog(
+            backgroundColor: Colors.white,
+            surfaceTintColor: Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16.r),
+            ),
+            title: Text(
+              'QR 재발급 제한',
+              style: TextStyle(fontSize: 18.sp, fontWeight: FontWeight.bold),
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.warning, color: Colors.orange, size: 48.sp),
+                SizedBox(height: 16.h),
+                Text(
+                  '아직 유효한 QR 코드가 있습니다.',
+                  style: TextStyle(
+                    fontSize: 16.sp,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                SizedBox(height: 8.h),
+                Text(
+                  '남은 시간: ${_formatTime(_qrRemainingSeconds)}',
+                  style: TextStyle(
+                    fontSize: 14.sp,
+                    color: Colors.red,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                SizedBox(height: 8.h),
+                Text(
+                  'QR이 만료된 후에 재발급이 가능합니다.',
+                  style: TextStyle(fontSize: 12.sp, color: Colors.grey[600]),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                style: ButtonStyle(
+                  overlayColor: MaterialStateProperty.all(Colors.transparent),
+                ),
+                child: Text(
+                  '확인',
+                  style: TextStyle(
+                    fontSize: 18.sp,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.red,
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
       );
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        if (data['success'] == true) {
-          setState(() {
-            _userPoints = data['points'];
-          });
-        }
-      }
-    } catch (e) {
-      print('💥 예외 발생: $e');
+    } else {
+      _fetchQrData();
     }
   }
 
   @override
   void dispose() {
     _qrTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    Future.microtask(() => _refreshData());
-
     const gold = Color.fromARGB(255, 255, 223, 0);
     final double boxTop = MediaQuery.of(context).size.height * 0.15;
     final double boxWidth = 310.w;
@@ -122,6 +320,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
               ? const Center(child: CircularProgressIndicator(color: gold))
               : Stack(
                 children: [
+                  // 1. 티켓 배경 박스
                   Positioned(
                     top: boxTop,
                     left: 0,
@@ -152,22 +351,14 @@ class _PaymentScreenState extends State<PaymentScreen> {
                                 children: [
                                   const Spacer(),
                                   Text(
-                                    '내 포인트',
+                                    '장학금 이모티콘 자리',
                                     style: TextStyle(
-                                      fontSize: 16.sp,
+                                      fontSize: 24.sp,
                                       fontWeight: FontWeight.bold,
                                       color: Colors.black,
                                     ),
                                   ),
-                                  Text(
-                                    '${_userPoints.toString().replaceAllMapped(RegExp(r'(\d)(?=(\d{3})+(?!\d))'), (m) => '${m[1]},')}P',
-                                    style: TextStyle(
-                                      fontSize: 28.sp,
-                                      fontWeight: FontWeight.bold,
-                                      color: Colors.black,
-                                    ),
-                                  ),
-                                  SizedBox(height: 24.h),
+                                  SizedBox(height: 36.h),
                                 ],
                               ),
                             ),
@@ -197,6 +388,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
                       ],
                     ),
                   ),
+                  // 2. 하단 내역 페이지 이동 터치 영역
                   Positioned(
                     top: boxTop + boxWidth * 0.65,
                     left: boxLeft,
@@ -218,6 +410,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
                       child: Container(),
                     ),
                   ),
+                  // 3. 타이머 및 컨트롤 바
                   Positioned(
                     top: boxTop + boxWidth + 10.h,
                     left: MediaQuery.of(context).size.width / 2 - 155.w,
@@ -275,7 +468,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
                                               ).createShader(bounds);
                                             },
                                             child: LinearProgressIndicator(
-                                              value: _qrRemainingSeconds / 60,
+                                              value: _qrRemainingSeconds / 300,
                                               backgroundColor: Colors.black,
                                               valueColor:
                                                   const AlwaysStoppedAnimation<
@@ -288,7 +481,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
                                       ),
                                       SizedBox(width: 14.w),
                                       GestureDetector(
-                                        onTap: _fetchQrData,
+                                        onTap: _handleRefreshTap,
                                         child: Icon(
                                           Icons.refresh,
                                           color: Colors.black,
@@ -297,26 +490,23 @@ class _PaymentScreenState extends State<PaymentScreen> {
                                       ),
                                     ],
                                   ),
-                                  if (_showExpiredMessage)
-                                    Padding(
-                                      padding: EdgeInsets.only(
-                                        top: 6.h,
-                                        bottom: 4.h,
-                                      ),
-                                      child: Text(
-                                        'QR 코드를 재갱신 해주세요.',
-                                        style: TextStyle(
-                                          color: Colors.red,
-                                          fontSize: 13.sp,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                    ),
+                                  SizedBox(height: 10.h), // 간격 조정
+                                  // ▼▼▼ [수정됨] 시간이 끝나면 텍스트가 바뀝니다 ▼▼▼
                                   Text(
-                                    '남은시간 : $_qrRemainingSeconds초',
+                                    _showExpiredMessage
+                                        ? 'QR 코드가 만료되었습니다.' // 만료 시 텍스트
+                                        : '남은시간 : ${_formatTime(_qrRemainingSeconds)}', // 평소 텍스트
                                     style: TextStyle(
                                       fontSize: 14.sp,
-                                      color: Colors.black,
+                                      // 만료되면 빨간색, 아니면 검정색
+                                      color:
+                                          _showExpiredMessage
+                                              ? Colors.red
+                                              : Colors.black,
+                                      fontWeight:
+                                          _showExpiredMessage
+                                              ? FontWeight.bold
+                                              : FontWeight.normal,
                                     ),
                                   ),
                                 ],
@@ -341,11 +531,14 @@ class _PaymentScreenState extends State<PaymentScreen> {
                       },
                     ),
                   ),
+                  // 4. QR 코드 표시 영역 (최상단)
                   Align(
                     alignment: Alignment.topCenter,
                     child: Padding(
                       padding: EdgeInsets.only(
-                        top: MediaQuery.of(context).size.height * 0.04,
+                        // ▼▼▼ [수정 위치] QR 코드를 아래로 내리는 부분입니다 ▼▼▼
+                        // 기존 0.04에서 0.08로 늘렸습니다. 더 내리려면 숫자를 키우세요 (예: 0.1)
+                        top: MediaQuery.of(context).size.height * 0.06,
                       ),
                       child: Container(
                         padding: EdgeInsets.all(18.w),
@@ -358,16 +551,37 @@ class _PaymentScreenState extends State<PaymentScreen> {
                           color: Colors.white,
                         ),
                         child:
-                            _qrImageUrl.isNotEmpty && _qrGeneratedAt != null
+                            _qrImageUrl.isNotEmpty
                                 ? QrImageView(
                                   data: _qrImageUrl,
                                   version: QrVersions.auto,
                                   size: 200.w,
                                   gapless: false,
                                 )
-                                : ElevatedButton(
-                                  onPressed: _fetchQrData,
-                                  child: Text('QR 불러오는중'),
+                                : Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    SizedBox(
+                                      width: 200.w,
+                                      height: 200.w,
+                                      child: Center(
+                                        child:
+                                            _showExpiredMessage
+                                                ? ElevatedButton(
+                                                  onPressed: _fetchQrData,
+                                                  style:
+                                                      ElevatedButton.styleFrom(
+                                                        backgroundColor:
+                                                            Colors.blue,
+                                                        foregroundColor:
+                                                            Colors.white,
+                                                      ),
+                                                  child: const Text('QR 재발급'),
+                                                )
+                                                : const CircularProgressIndicator(),
+                                      ),
+                                    ),
+                                  ],
                                 ),
                       ),
                     ),

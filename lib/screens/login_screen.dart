@@ -32,20 +32,22 @@ class _LoginScreenState extends State<LoginScreen> {
       message = '';
     });
 
-    final id = idController.text.trim();
-    final pw = pwController.text;
+    final employeeNumber = idController.text.trim();
+    final password = pwController.text;
 
-    final result = await AuthService.login(id, pw);
-
-    final prefs = await SharedPreferences.getInstance();
+    final result = await AuthService.login(employeeNumber, password);
 
     if (result['status'] == "success") {
-      await prefs.setString('jwt_token', result['token']);
-      await prefs.setString('user_id', result['id']);
-      await prefs.setString('user_name', result['name']);
-      await prefs.setString('affiliation', result['affiliation']);
-      await prefs.setString('profile_image', result['profile_image']);
-      await prefs.setString('user_type', 'user');
+      // AuthService에서 이미 토큰과 사용자 정보가 저장됨
+      // 'data' 또는 'user' 중 존재하는 것을 사용
+      final user = result['data'] ?? result['user'];
+
+      if (user == null) {
+        setState(() {
+          message = '로그인 정보를 가져올 수 없습니다.';
+        });
+        return;
+      }
 
       if (!mounted) return;
       Navigator.pushReplacement(
@@ -53,29 +55,21 @@ class _LoginScreenState extends State<LoginScreen> {
         MaterialPageRoute(
           builder:
               (_) => QRScreen(
-                userId: result['id'],
-                userName: result['name'],
-                affiliation: result['affiliation'],
-                profileImage: result['profile_image'],
+                userId:
+                    user['employee_number']?.toString() ??
+                    user['user_id']?.toString() ??
+                    '',
+                userName: user['name']?.toString() ?? '',
+                affiliation: user['affiliation']?.toString() ?? '',
+                profileImage: user['profile_image']?.toString() ?? '1.jpeg',
               ),
         ),
       );
-    } else if (result['status'] == "admin_success") {
-      await prefs.setString('jwt_token', result['token']);
-      await prefs.setString('user_id', result['id']);
-      await prefs.setString('user_name', result['name']);
-      await prefs.setString('user_type', 'admin');
-      // 관리자 전용 화면이 있다면 여기에 이동 처리
     } else {
-      await prefs.remove('jwt_token');
-      await prefs.remove('user_id');
-      await prefs.remove('user_name');
-      await prefs.remove('user_type');
-      await prefs.remove('profile_image');
-      await prefs.remove('affiliation');
-
       setState(() {
-        message = "사번,학번 또는 비밀번호가 잘못 되었습니다.\n아이디와 비밀번호를 다시 한 번 확인해주세요.";
+        message =
+            result['message'] ??
+            "사번,학번 또는 비밀번호가 잘못 되었습니다.\n아이디와 비밀번호를 다시 한 번 확인해주세요.";
       });
     }
 
@@ -353,13 +347,13 @@ class _LoginScreenState extends State<LoginScreen> {
                                 color: const Color.fromARGB(255, 230, 10, 144),
                               ),
                             ),
-                            SizedBox(height: 8.h),
+                            SizedBox(height: 12.h),
                             Padding(
                               padding: EdgeInsets.symmetric(horizontal: 32.w),
                               child: Text(
                                 '포인트 결제 후 오류 발생 시\n'
                                 '해당 연락처로 문의 바랍니다.\n'
-                                '(포인트 충전은 처리에 다소 시간이 소요될 수 있음)',
+                                '031-570-9xxx',
                                 textAlign: TextAlign.center,
                                 style: TextStyle(
                                   fontSize: 14.sp,
